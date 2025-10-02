@@ -1,5 +1,5 @@
 {
-  "name": "react-use-safe-array",
+  "name": "@jleechan/use-safe-array",
   "version": "1.0.0",
   "description": "React hook and utility helpers for safely normalising nullable array props.",
   "keywords": [
@@ -14,12 +14,12 @@
   "author": "",
   "repository": {
     "type": "git",
-    "url": "git+https://example.com/react-use-safe-array.git"
+    "url": "git+https://github.com/jleechanorg/jleechan_fun.git"
   },
   "bugs": {
-    "url": "https://example.com/react-use-safe-array/issues"
+    "url": "https://github.com/jleechanorg/jleechan_fun/issues"
   },
-  "homepage": "https://example.com/react-use-safe-array#readme",
+  "homepage": "https://github.com/jleechanorg/jleechan_fun#readme",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",

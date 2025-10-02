@@ -1,0 +1,60 @@
+{
+  "name": "@jleechan/use-safe-array",
+  "version": "1.0.0",
+  "description": "React hook and utility helpers for safely normalising nullable array props.",
+  "keywords": [
+    "react",
+    "hook",
+    "array",
+    "utility",
+    "safe",
+    "typescript"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jleechanorg/jleechan_fun.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jleechanorg/jleechan_fun/issues"
+  },
+  "homepage": "https://github.com/jleechanorg/jleechan_fun#readme",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "default": "./dist/index.mjs"
+    }
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --dts --format cjs,esm",
+    "test": "vitest",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "react": ">=16.8"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^14.2.2",
+    "@types/node": "^20.12.7",
+    "@types/react": "^18.2.62",
+    "jsdom": "^24.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "tsup": "^7.2.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  }
+}

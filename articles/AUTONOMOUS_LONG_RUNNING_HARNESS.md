@@ -1,22 +1,22 @@
 # Autonomous Long-Running Agent Harness
 
-> *A fully autonomous multi-agent coding architecture combining GAN-style generation/evaluation loops, Anthropic-style context resets and sprint contracts, and Boris-style research and planning phases — with no human in the loop.*
+> A fully autonomous multi-agent coding architecture combining GAN-style generation/evaluation loops, Anthropic-style context resets and sprint contracts, and Boris-style research and planning phases — with no human in the loop. Evaluator thresholds are the only quality gate.
 
-**Status:** Design Proposal
-**Sources:** Anthropic Harness Engineering (2025), Anthropic Advisor/GAN Strategy (2025), Boris Tan "How I Use Claude Code" (2026), SWE-bench (2025-2026), Process Reward Models literature, Self-Evolution agent research (2025-2026)
+**Status:** Design v2 (wiki-informed)
+**Sources:** Anthropic Harness Engineering (2025), Anthropic Advisor/GAN Strategy (2025), Boris Tan "How I Use Claude Code" (2026), LLM Wiki prior experiments (Meta-Harness, SWE-bench, PRM, Combined), SWE-bench/SWE-TRACE (2025-2026)
 
 ---
 
 ## The Core Problem
 
-Long-running autonomous coding tasks fail in predictable ways:
+Long-running autonomous coding tasks fail in four predictable ways:
 
-1. **Context anxiety** — models wrap up prematurely as they feel their context window filling, even with compaction
+1. **Context anxiety** — models wrap up prematurely as context window fills, even with compaction
 2. **Self-evaluation failure** — agents grade their own output generously; a generator judging itself is useless
-3. **No scope discipline** — agents drift from the spec over multi-hour runs
+3. **No scope discipline** — agents drift from spec over multi-hour runs
 4. **Context window collapse** — history grows without bound until the model loses coherence
 
-The harness below addresses all four via architectural decisions, not prompt engineering.
+The harness addresses all four via architectural decisions, not prompt engineering.
 
 ---
 
@@ -32,11 +32,11 @@ The harness below addresses all four via architectural decisions, not prompt eng
 - Generator + Evaluator must be separate agents
 - Evaluator calibrated to be skeptical via few-shot examples
 - Hard thresholds on grading criteria — any breach = fail
-- Playwright MCP for live-app evaluation (not static analysis)
+- **Current design uses `ao skeptic verify` (upgraded) as the active Evaluator.** Playwright MCP is the reference implementation pattern; the upgraded skeptic agent replaces it as the live architecture.
 
 ### Boris Workflow (Research + Planning Rigor)
 - Mandatory deep-read research phase before any planning
-- `research.md` as prerequisite artifact (blocks planning if < 50 lines)
+- `research.md` as prerequisite artifact (blocks planning if <50 lines)
 - All implementation gated behind approved plan
 - Todo list in plan tracked throughout execution
 
@@ -45,40 +45,31 @@ The harness below addresses all four via architectural decisions, not prompt eng
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                   ORCHESTRATOR (AO, long-lived)             │
-│   State machine · artifact routing · loop control · budget   │
-└──────────┬──────────┬──────────┬──────────┬──────────────────┘
-           │          │          │          │
-     ┌─────▼─────┐ ┌──▼──────┐ ┌▼────────┐ ┌▼──────────┐
-     │ RESEARCHER │ │STRATEGIST│ │GENERATOR│ │ EVALUATOR │
-     │ deep-read  │ │spec+plan │ │1 sprint │ │ Playwright│
-     │ research.md│ │ plan.md  │ │ at time │ │ hard gate │
-     └───────────┘ └──────────┘ └────┬────┘ └─────┬──────┘
-                                    │             │
-                              sprint_contract   scores+
-                                    ↓          critique
-                              ┌─────────────────────────┐
-                              │      REVIEWER           │
-                              │ autonomous plan critique │
-                              │   (2 rounds max w gen)  │
-                              └─────────────────────────┘
+ORCHESTRATOR (AO, long-lived)
+  State machine · artifact routing · loop control · budget
+
+  Researcher → research.md           (blocks if <50 lines)
+  Strategist → spec.md + plan.md
+  Reviewer   → plan_review.md         (L1 constraint enforcement)
+  Generator + Reviewer → sprint_contract.md  (max 2 rounds negotiation)
+  Generator  → sprint_N_report.md + git commit
+  Evaluator  → sprint_N_eval.md      (dual verdict: EVIDENCE + QUALITY)
+    [QUALITY FAIL] → critique → Generator (SelfCritiqueVerificationLoop, 2-iter cap)
+    [PASS]          → next sprint
 ```
 
 ### Agent Definitions
 
 | Agent | Input | Output | Role |
 |-------|-------|--------|------|
-| **Orchestrator** | `brief` | `harness_state.json` | State machine; enforces guards; routes artifacts |
-| **Researcher** | existing codebase | `research.md` (>50 lines) | Deep codebase understanding; prerequisite for all planning |
+| **Orchestrator** | brief | `harness_state.json` | State machine; enforces guards; routes artifacts |
+| **Researcher** | existing codebase | `research.md` (>50 lines) | Deep codebase understanding; prerequisite for planning |
 | **Strategist** | `research.md`, `brief` | `spec.md`, `plan.md` | Expands brief into full spec + prioritized feature breakdown |
-| **Reviewer** | `spec.md`, `plan.md` | `plan_review.md` | Autonomous critique: tech corrections, scope adjustments, constraints |
+| **Reviewer** | `spec.md`, `plan.md` | `plan_review.md` | Autonomous critique: tech corrections, scope, L1 constraint violations |
 | **Generator** | `spec.md`, `plan.md`, `sprint_contract.md` | `sprint_N_report.md`, git commit | Implements sprint; self-evaluates before handoff |
-| **Evaluator** | `sprint_N_report.md`, running app | `sprint_N_eval.md` | Playwright MCP live testing; independent scoring; threshold gate |
+| **Evaluator** | `sprint_N_report.md`, running app | `sprint_N_eval.md` (dual verdict) | Independent scoring; threshold gate; L4 verification |
 
----
-
-## The Autonomous Loop
+### The Six-Agent Loop
 
 ```
 brief
@@ -87,98 +78,188 @@ brief
 RESEARCHER: deep-read codebase → research.md (blocks if <50 lines)
   │
   ▼
-STRATEGIST: spec.md + plan.md from brief
+STRATEGIST: spec.md + plan.md
   │
   ▼
-REVIEWER: write plan_review.md (autonomous annotations)
+REVIEWER: plan_review.md (autonomous annotations + L1 constraint check)
   │
   ▼
-negotiate sprint_contract.md
-  Generator proposes scope + acceptance criteria
-  Reviewer critiques (max 2 rounds)
-  Orchestrator arbitrates if no agreement
+sprint_contract.md negotiated (Generator proposes, Reviewer critiques, 2 rounds max)
   │
   ▼
-ORCHESTRATOR: sprint_contract.md signed → Generator unlocked
+ORCHESTRATOR: contract signed → Generator unlocked
   │
   ▼
-GENERATE (Generator)
-  implement sprint_contract.md exactly
-  self-evaluate against same criteria Evaluator will use
-  write sprint_N_report.md
-  git commit
+GENERATE: implement sprint_contract.md → sprint_N_report.md → git commit
   │
   ▼
-EVALUATE (Evaluator)
-  Playwright MCP: navigate live app, test flows, inspect state
-  grade all 5 criteria independently (never sees Generator's self-eval)
+EVALUATE: AO skeptic agent → dual verdict (EVIDENCE + QUALITY)
   │
-  ├─ any threshold breach → FAIL
-  │   write sprint_N_critique.md
-  │   Generator reads critique → regenerate sprint (max 5 iterations)
+  ├─ QUALITY FAIL → critique → Generator
+  │                 SelfCritiqueVerificationLoop: 2-iteration cap
   │
-  └─ all pass → Orchestrator advances to next sprint
-            │
-            ▼
-      [repeat until plan.md complete or max_sprints reached]
+  └─ both PASS → next sprint
 ```
+
+---
+
+## LLM Wiki — Prior Experiment Results
+
+Three prior experiment cycles were run against worldarchitect.ai PRs. These results directly inform the Evaluator upgrade path.
+
+### Meta-Harness (context + prompt optimization)
+
+| PR | Baseline | Meta-Harness | Delta |
+|----|----------|-------------|-------|
+| WA-001 (small) | 51 | 85 | **+34** |
+| WA-004 (medium) | 68 | 90 | **+22** |
+| WA-005 (complex) | 62 | 87 | **+25** |
+| **Average** | **60** | **87** | **+27** |
+
+**Key insight:** Explicit typing guidance (TypedDict) yields the largest single improvement. Harness-layer guidance ("use TypedDict") is higher leverage than model-layer improvements.
+
+### SWE-bench (test-first → fix → verify)
+
+| PR | Baseline | SWE-bench | Delta |
+|----|----------|-----------|-------|
+| WA-001 (small) | 48 | 72 | **+24** |
+| WA-004 (medium) | 45 | 68 | **+23** |
+| WA-005 (complex) | 40 | 65 | **+25** |
+
+**Key insight:** Test-first forces explicit data shape specification before generation. Largest gains on Type Safety dimension.
+
+### PRM — Process Reward Model (step-level feedback)
+
+| PR | Baseline | PRM | Delta |
+|----|----------|-----|-------|
+| WA-001 (small) | 55 | 78 | **+23** |
+| WA-004 (medium) | 48 | 72 | **+24** |
+| WA-005 (complex) | 42 | 65 | **+23** |
+
+**Key insight:** Step-level scoring catches failures that final-score evaluation misses. Guard clauses forgotten, `.get()` chains used silently, edge cases missed. Steps scored <7/10 trigger revision.
+
+### Combined (SWE-bench + Meta-Harness + ExtendedThinking)
+
+| PR | Baseline | Combined | vs Meta-Harness alone |
+|----|----------|----------|----------------------|
+| WA-001 (small) | 48–58 | **90** | +5 |
+| WA-004 (medium) | 45–68 | **92** | +2 |
+| WA-005 (complex) | 40–62 | **88** | +1 |
+
+**Recommendation:** Combined for sprints marked "critical"; Meta-Harness alone for routine sprints. Most value is captured by Meta-Harness alone; Combined is additive primarily for small/medium tasks.
 
 ---
 
 ## Grading Criteria
 
-Evaluated by Evaluator via Playwright MCP. Hard threshold gate — any criterion below its threshold = sprint fails.
+Hard threshold gate — any criterion below its threshold = sprint fails. Evaluator never sees Generator's self-eval.
 
-| Criterion | Weight | What It Catches | Threshold |
+### CanonicalCodeScorer — 6-Dimension Rubric
+
+The Evaluator's scoring engine. Rubric from `~/llm_wiki/wiki/concepts/CanonicalCodeScorer.md`.
+
+| Dimension | Weight | What It Catches | Threshold |
 |-----------|--------|-----------------|-----------|
-| **Functionality** | 25% | Broken flows, dead UI, API errors, bad state | ≥ 80% |
-| **Code Quality** | 20% | Type errors, security issues, architectural smell | ≥ 70% |
-| **Design & Polish** | 25% | Generic "AI slop" patterns, bad UX, inconsistent styling | ≥ 60% |
-| **Product Depth** | 20% | Shallow implementations, missing edge cases | ≥ 70% |
-| **Originality** | 10% | Template defaults, uncreative solutions | ≥ 50% |
+| Type Safety / Architecture | 30% | TypedDict, strong typing, clean architecture | ≥ 70% |
+| Error Handling / Robustness | 20% | Exceptions, input validation, edge cases | ≥ 70% |
+| Naming & Consistency | 15% | Variables/functions follow conventions | ≥ 70% |
+| Test Coverage & Clarity | 15% | Unit/integration/edge case coverage | ≥ 70% |
+| Documentation | 10% | Docstrings explain *why*, not *what* | ≥ 60% |
+| Evidence-Standard Adherence | 10% | Harness evidence standards met | ≥ 70% |
 
-### Evaluator Calibration Prompt
+**Overall formula:** `0.7 × rubric-weighted-pass-rate + 0.3 × diff-similarity`
 
-> "Be skeptical. Generous scores from a generator are meaningless. You are calibrated to reject mediocre output. Penalize purple-gradient-over-white-card patterns, library defaults, and safe generic layouts. The best outputs demonstrate deliberate creative choices. If in doubt, err toward failure — the Generator can iterate."
+- **Rubric component:** Each dimension is continuous (0–100%), not binary. Per-dimension score is the estimated pass rate within that dimension. A dimension "passes" when its score ≥ its configured Threshold.
+- **Diff similarity:** Token-level edit distance against a ground-truth canonical pattern. Normalized as `1 - (edit_distance / max(edit_distance, len(pattern)))`. Prevents "polished garbage" — code that scores well qualitatively but diverges structurally from the correct implementation.
+- **Fallback when no canonical exists:** Diff-similarity is marked N/A; overall formula falls back to rubric-only score (weight 1.0). Use nearest-canonical heuristic: find the most similar feature pattern in `wiki/concepts/` and use its canonical as the diff reference.
 
-**Few-shot calibration**: Run 3 test evaluations on known-good / known-bad reference outputs before each harness launch to verify evaluator alignment. Adjust thresholds based on calibration results.
+### Dual Verdict (EVIDENCE + QUALITY)
 
-**Evaluator drift prevention**: Reset evaluator prompt every 10 sprints to prevent score drift from repeated self-reinforcement.
+The Evaluator emits two separate verdicts. **Both must be PASS for the sprint to advance.**
+
+| Verdict | What It Measures | Gate |
+|---------|-----------------|------|
+| **EVIDENCE: PASS/FAIL** | Does the PR have video/screenshot evidence per harness standards? | Required for merge |
+| **QUALITY: PASS/FAIL** | Does the code score above all CanonicalCodeScorer thresholds? | Required for merge |
+
+This is the DualAgentArchitecture pattern. Evidence compliance and code quality are separate reviewer mandates — conflating them is how polished garbage gets merged.
+
+### Evaluator Calibration
+
+**Few-shot calibration:** Run 3 test evaluations on known-good/known-bad reference outputs before harness launch. Score deviation from expected results indicates drift.
+
+**Drift prevention:** Reset evaluator prompt to prevent self-reinforcement. Track pass rate in `~/.agent-orchestrator/skeptic-calibration.json`. **Semantics: consecutive pass streak** — if the 10 most recent runs are all PASS (no FAIL in the last 10 entries), trigger a prompt reset. Any FAIL in the last 10 resets the streak to 0.
+
+---
+
+## SelfCritiqueVerificationLoop — The Inner Iteration Loop
+
+From `~/llm_wiki/wiki/concepts/SelfCritiqueVerificationLoop.md`:
+
+```
+Phase 0: Insert canonical pattern prompt (e.g. "FastAPI error handling pattern")
+Phase 1: Think step-by-step → generate initial code
+Phase 2: Generate full test suite → run in sandbox → capture failures
+Phase 3: Critique against test results
+  - Any failure + <3 iterations → loop back to Phase 2 with revised tests/code
+  - All pass + clean critique → output final verified code only
+```
+
+**Critical evidence:** Self-refine WITHOUT canonical pattern context hits token cap (4,096 tokens, 45s) and still fails. **Context + canonical patterns is mandatory**, not optional.
+
+**Harness integration:** The Evaluator uses this loop internally:
+1. First pass: identify failures against CanonicalCodeScorer rubric
+2. Second pass: verify fixes (**2-iteration cap** — cost-optimized for automated skeptic; full harness uses 3 iterations per canonical spec)
+3. If still failing after 2 iterations: emit QUALITY FAIL with specific critique
+
+---
+
+## Harness5LayerModel — Architectural Context
+
+From `~/llm_wiki/wiki/concepts/Harness5LayerModel.md`:
+
+| Layer | Description | Autonomous Harness Role |
+|-------|-------------|------------------------|
+| L1 Constraint | ArchUnit-style linters, dependency rules, naming conventions | Reviewer agent — flags violations during plan_review.md phase, before any code is written |
+| L2 Context | SOUL.md/CLAUDE.md/AGENTS.md, research.md, spec.md, sprint contracts | All agents — context injected at prompt start |
+| L3 Execution | AO dispatch, sandboxed test execution, canonical pattern injection | Generator + Evaluator runtime |
+| L4 Verification | Evaluator + CanonicalCodeScorer — acceptance criteria, evidence standards | Evaluator (AO skeptic agent) |
+| L5 Lifecycle | Orchestrator state machine, crash recovery, cost tracking, git commits per sprint | Orchestrator (AO) |
+
+**Key insight:** Anthropic Managed Agents provides L2, L3, L5. **Gap:** L1 (domain-specific architectural constraints) and L4 (acceptance criteria/verification) are the team's responsibility. Most teams skip L1, over-invest in L4. **L1 offers highest marginal return on managed platforms.**
+
+**AO skeptic agent currently serves L4.** It should also serve L1 constraint enforcement by reading architectural rules from the wiki and flagging violations during plan_review.md — before any code is written.
 
 ---
 
 ## File-Based Handoffs
 
-All agents communicate through files. No in-memory context passing. This is critical for:
-
-- Surviving orchestrator restarts (a crashed orchestrator can resume from state)
-- Independent agents with no shared memory
-- Auditability — every decision is traceable to an artifact
+All agents communicate through files. No in-memory context. Critical for surviving orchestrator restarts and independent agent operation.
 
 | Artifact | Written By | Read By | Purpose |
 |----------|-----------|---------|---------|
 | `research.md` | Researcher | Strategist, Generator | Deep codebase understanding |
-| `spec.md` | Strategist | All agents | Full product specification |
+| `spec.md` | Strategist | All | Full product specification |
 | `plan.md` | Strategist | Reviewer, Generator | Feature breakdown with priorities |
-| `plan_review.md` | Reviewer | Generator | Autonomously annotated corrections |
+| `plan_review.md` | Reviewer | Generator | Autonomous annotations + L1 constraint violations |
 | `sprint_contract.md` | Generator + Reviewer | Both | Agreed "done" criteria before sprint |
 | `sprint_N_report.md` | Generator | Evaluator | What was built + self-eval |
-| `sprint_N_eval.md` | Evaluator | Generator, Orchestrator | Scores + critique |
+| `sprint_N_eval.md` | Evaluator | Generator, Orchestrator | Dual verdict (EVIDENCE + QUALITY) + scores |
 | `harness_state.json` | Orchestrator | All | Canonical state; survives restarts |
 
 ---
 
 ## Context Reset Strategy
 
-Compaction (summarizing history in-place) preserves continuity but does **not** eliminate context anxiety — the model still "feels" full and wraps up early. Reset gives a clean slate at cost of token overhead.
+Compaction alone does NOT eliminate context anxiety. Reset gives a clean slate at cost of token overhead.
 
 ### When to Reset
 
 | Trigger | Action |
 |---------|--------|
-| Context window > 80% mid-sprint | Generator writes `sprint_N_state.json` → next agent resumes |
+| Context window >80% mid-sprint | Generator writes state artifact; next agent resumes |
 | Model exhibits premature wrap-up | Hard reset + state artifact |
-| Sprint runs > 90 minutes without reaching eval | Force eval gate, then reset |
+| Sprint runs >90 minutes without eval | Force eval gate, then reset |
 
 ### State Artifact Format
 
@@ -186,69 +267,43 @@ Compaction (summarizing history in-place) preserves continuity but does **not** 
 {
   "sprint": 3,
   "in_progress_files": ["src/handlers/auth.go", "migrations/004.sql"],
-  "cursor_positions": {
-    "src/handlers/auth.go": "line 247",
-    "migrations/004.sql": "line 12"
-  },
-  "next_steps": [
-    "finish auth handler (JWT RS256)",
-    "write integration tests",
-    "update routes.go"
-  ],
+  "cursor_positions": {"src/handlers/auth.go": "line 247"},
+  "next_steps": ["finish auth handler (JWT RS256)", "write integration tests", "update routes"],
   "context_pct": 82,
   "token_budget_spent": 145000
 }
 ```
 
-### Compaction vs Reset
-
-| Approach | Context Continuity | Context Anxiety Eliminated | Token Overhead |
-|----------|-------------------|---------------------------|----------------|
-| Compaction only | High | No | Medium |
-| Reset only | Low | Yes | Low |
-| Compaction + periodic reset | Medium | Yes | Medium |
-
-**Rule**: Compaction runs continuously; hard reset every 2 sprints OR when context > 80%.
-
 ---
 
 ## Research Phase
 
-Mandatory prerequisite for Strategist. Research must be deep — surface-level reading produces wrong plans.
+Mandatory prerequisite for Strategist. Surface-level reading produces wrong plans.
 
-### Researcher Prompt
+**Researcher prompt:** "Thoroughly read and understand this codebase. Write research.md covering: (1) architecture, (2) data models, (3) API endpoints, (4) existing patterns, (5) known debt. Do not summarize at function-signature level. Output must exceed 50 lines."
 
-> "Thoroughly read and understand this codebase. Write a detailed `research.md` covering: (1) architecture overview, (2) data models and relationships, (3) API endpoints and their purposes, (4) existing patterns for new features (naming conventions, error handling, auth patterns), (5) known limitations or technical debt. Use 'deeply' and 'in detail' — do not summarize at the function-signature level. Your output must exceed 50 lines."
+**Orchestrator gate:** research.md absent or <50 lines blocks Strategist. Hard gate, no exceptions.
 
-### Orchestrator Gate
-
-If `research.md` is absent or < 50 lines, the Orchestrator blocks the Strategist and returns an error. No exceptions.
-
-**Why this matters**: The most expensive failure mode in AI-assisted coding is not bad syntax — it is implementations that work in isolation but break the surrounding system. A function that ignores existing caching. A migration that violates ORM conventions. Research prevents all of this.
+**Why this matters:** The most expensive failure mode is not bad syntax — it is implementations that work in isolation but break the surrounding system. A function that ignores existing caching. A migration that violates ORM conventions. Research prevents all of this.
 
 ---
 
 ## Sprint Contract Protocol
 
-Prevents Generator drift by forcing explicit scope agreement before any code is written.
-
-### Example Negotiation
+Forces explicit scope agreement before any code is written.
 
 ```
-Generator: "For Sprint 3 I will implement user authentication.
-Done criteria: (1) /login page renders, (2) POST /api/login returns 200 with JWT,
-(3) protected /dashboard redirects to login if unauthenticated.
-Self-eval: Functionality 85, Code Quality 80."
+Generator: "Sprint 3: user auth. Done: (1) /login renders, (2) POST /api/login returns 200 JWT,
+(3) unauthenticated /dashboard redirects. Self-eval: Func 85, Code 80."
 
-Reviewer: "Agreed on criteria. Add: (4) invalid credentials return 401,
-(5) JWT must be RS256. Self-eval thresholds acceptable."
+Reviewer: "Agreed. Add: (4) invalid creds return 401, (5) JWT must be RS256."
 
-Generator: "Added criteria 4-5. Sprint contract locked."
+Generator: "Added. Contract locked."
 
-Orchestrator: "contract signed → Generator unlocked for execution."
+Orchestrator: "signed → Generator unlocked."
 ```
 
-**Max negotiation rounds**: 2. If no agreement, Orchestrator arbitrates based on `spec.md` scope priority.
+Max 2 negotiation rounds. Orchestrator arbitrates if no agreement.
 
 ---
 
@@ -269,77 +324,64 @@ Implementation should be mechanical, not creative. All creative decisions were m
 
 ## Orchestrator Responsibilities
 
-1. **State machine**: Track current phase, sprint number, eval pass/fail per sprint
-2. **Artifact routing**: Each agent reads correct inputs, writes to correct outputs
-3. **Guard enforcement**: Generator cannot start until `sprint_contract.md` is signed
-4. **Context budget**: Reset at 80% context; abort at token budget with reason logged
-5. **Loop control**: Continue sprint loop until `plan.md` complete OR max iterations reached (default: 20 sprints)
-6. **Evaluator calibration**: Run 3-shot baseline check before harness launch
-7. **Persistence**: All files in `./harness/{run_id}/`; survives Orchestrator restarts
+1. **State machine:** Track current phase, sprint number, eval pass/fail per sprint
+2. **Artifact routing:** Each agent reads correct inputs, writes to correct outputs
+3. **Guard enforcement:** Generator cannot start until `sprint_contract.md` is signed
+4. **Context budget:** Reset at 80% context; abort at token budget with reason logged
+5. **Loop control:** Continue sprint loop until `plan.md` complete OR max iterations reached (default: 20 sprints)
+6. **Evaluator calibration:** Run 3-shot baseline check before harness launch
+7. **Persistence:** All files in `./harness/{run_id}/`; survives Orchestrator restarts
+8. **Skeptic calibration tracking:** Maintain `skeptic-calibration.json`
 
 ---
 
 ## Failure Modes and Mitigations
 
-| Failure | Root Cause | Fix |
-|---------|-----------|-----|
-| Polished garbage (works but wrong) | Evaluator too lenient | Recalibrate with stricter few-shot; reset evaluator prompt |
-| Infinite loop (evaluator always fails) | Threshold too high | Adjust threshold down; cap at 5 iterations/sprint, then abort |
-| Generator drifts from spec | No sprint contract | Orchestrator refuses to start sprint without signed contract |
-| Context anxiety (premature wrap-up) | Compaction only | Force reset + state artifact |
-| Evaluator score drift over time | Same evaluator prompt | Reset evaluator prompt every 10 sprints |
-| Generator cherry-picks easy plan items | No enforcement | Orchestrator tracks plan coverage; direct Generator to hard items first |
-| Beautiful but broken app | Evaluator only checks looks | Hard Functionality gate ≥80% required; Playwright testing mandatory |
-| Research phase skipped | Orchestrator didn't block | `research.md` < 50 lines blocks Strategist; hard gate |
+| Failure | Cause | Fix |
+|---------|-------|-----|
+| Polished garbage | Evaluator too lenient | Recalibrate few-shot; reset evaluator prompt |
+| Infinite loop | Threshold too high | Adjust down; cap 5 iterations/sprint |
+| Generator drift | No sprint contract | Orchestrator refuses to start sprint without signed contract |
+| Context anxiety | Compaction only | Force reset + state artifact |
+| Evaluator score drift | No prompt reset | Reset every 10 sprints (consecutive-streak semantics) |
+| Beautiful but broken app | No functionality gate | CanonicalCodeScorer hard thresholds all dimensions |
+| Research phase skipped | Orchestrator didn't block | `research.md` <50 lines blocks Strategist |
+| Self-refine fails | No canonical patterns | Mandatory pattern grounding before generation |
+| Skeptic score drift | No calibration tracking | `skeptic-calibration.json` + consecutive-streak reset trigger |
+| Claim without code | No traceability | Claim-to-code mapping phase (P7) — acceptance criteria → diff hunks |
 
 ---
 
 ## Anti-Patterns
 
-- **Ralph loops without gates** — Continuous iteration without evaluator thresholds produces mediocre results that converge slowly
-- **Generator self-grading** — Agents are reliably generous to their own output; never trust self-eval as sole gate
-- **Compaction-only, no resets** — Context anxiety persists; model wraps up early even with compaction
-- **No sprint contract** — Vague scope → generator drift → wrong thing built confidently
-- **Human-in-the-loop for every sprint** — Bottlenecks the harness; use evaluator thresholds instead
-- **Skipping research** — Wrong understanding → wrong plan → wrong implementation
-- **Single-evaluator long-term** — Score drift is inevitable; recalibrate periodically
-- **Generator jumping ahead** — "Don't implement yet" guard; Orchestrator enforces contract before unlock
+- **Ralph loops without evaluator gates** — continuous iteration without thresholds produces mediocre results
+- **Generator self-grading** — agents are reliably generous to their own output
+- **Compaction-only, no resets** — context anxiety persists; model wraps up early
+- **No sprint contract** — vague scope → generator drift → wrong thing built confidently
+- **Human-in-the-loop for every sprint** — bottlenecks the harness; use evaluator thresholds instead
+- **Skipping research phase** — wrong understanding → wrong plan → wrong implementation
+- **Single-evaluator long-term without recalibration** — score drift is inevitable
+- **Generator jumping ahead without contract** — "don't implement yet" guard
+- **Self-refine without canonical pattern grounding** — hits token cap and still fails
+- **Conflating evidence and quality verdicts** — code quality failures masked by good evidence
 
 ---
 
-## Research: Key Papers and Articles
+## Evaluator Upgrade Path (Skeptic Agent)
 
-### Foundational Articles
-- **Anthropic: Harness Design for Long-Running Apps** (`anthropic.com/engineering/harness-design-long-running-apps`) — Context resets, three-agent architecture, sprint contracts, file handoffs
-- **Anthropic: The Advisor Strategy** (`claude.com/blog/the-advisor-strategy`) — GAN-style generator/evaluator separation, grading criteria with hard thresholds, Playwright evaluation, few-shot calibration
-- **Boris Tan: How I Use Claude Code** (`boristane.com/blog/how-i-use-claude-code/`) — Research phase with "deeply" language, annotation cycle, "don't implement yet" guard, implementation directive, terse corrections
+The current `ao skeptic verify` is structurally the Evaluator but is underpowered. Wiki experiments prove these gaps matter:
 
-### Benchmarks and Evaluation
-- **SWE-bench** (`swebench.ai`) — Autonomous agent for GitHub issue resolution; evaluator-style verification loop; SWE-TRACE (2026) extends this with process reward models and test-time scaling
-- **ORACLE-SWE** — Quantifies oracle information signals in SWE agents
-- **Frontier-Eng** — Benchmarking self-evolving agents on real-world engineering tasks
-- **CodiumATE** — Autonomous code testing agent; evaluator implementation patterns
+| Priority | Gap | Wiki Finding | Improvement |
+|----------|-----|--------------|-------------|
+| **P1** | No step-level scoring (PRM) | Steps <7/10 trigger revision; catches guard-clause and `.get()` chain misses | Decompose PR into steps; score each step |
+| **P2** | No SelfCritiqueVerificationLoop | Self-refine without canonical hits token cap and still fails | 2-pass skeptic: first identifies failures, second verifies fixes |
+| **P3** | No CanonicalCodeScorer rubric | 6-dim rubric + diff similarity: baseline 55 → optimized 87 | Score all dimensions independently; PASS requires ALL above threshold |
+| **P4** | No drift prevention | Evaluator becomes self-reinforcing | `skeptic-calibration.json` + consecutive-streak reset trigger |
+| **P5** | No few-shot calibration | 3 reference PRs calibrate evaluator | Run 3 reference PRs through skeptic before activating on real PRs |
+| **P6** | No dual verdict | Evidence and quality conflated | Emit EVIDENCE + QUALITY separately; merge gate requires both PASS |
+| **P7** | No claim-to-code traceability | Acceptance criteria not mapped to diff hunks | Explicit claim-mapping phase: PR description → diff hunk verification |
 
-### Multi-Agent and Self-Evolution
-- **Autogenesis: A Self-Evolving Agent Protocol** — Multi-agent self-improvement loop; relevant to Generator→Evaluator→Generator iteration
-- **SkillForge** — Forging domain-specific self-evolving agent skills in cloud technical support
-- **DarwinNet** — Evolutionary network architecture for agent-driven protocol synthesis
-- **UI-Voyager** — Self-evolving GUI agent learning from failed experiences
-
-### Context and Planning
-- **Tokalator** — Context engineering toolkit for AI coding assistants
-- **From Plan to Action** — How well do agents follow plans? Gap between planning and execution
-- **ClawVM** — Harness-managed virtual memory for stateful tool-using LLM agents
-- **Agent Memory Management** — External memory stores for long-horizon tasks
-
-### Code Generation and Verification
-- **Dr. RTL** — Autonomous agentic RTL optimization through tool-grounded self-improvement
-- **SEC-bench** — Automated benchmarking of LLM agents on real-world software security tasks
-- **COEVO** — Co-evolutionary framework for joint functional correctness and PPA optimization in LLM-based RTL generation
-
-### Process Reward Models
-- **SWE-TRACE** — Optimizing long-horizon SWE agents through rubric process reward models and heuristic test-time scaling (2026)
-- **Process Reward Models** (PRM) — Step-level grading during generation; relevant to Evaluator scoring methodology
+**Expected impact:** Full P1–P6 implementation closes ~80% of the evaluator gap. P7 (claim-to-code traceability) closes the remaining ~20% — PR description claims explicitly verified against diff hunks.
 
 ---
 
@@ -349,8 +391,8 @@ Implementation should be mechanical, not creative. All creative decisions were m
 |---------|----------|------|
 | Single-agent (no harness) | ~20 min | ~$9 |
 | Full 3-agent harness (Anthropic benchmark) | ~6 hr | ~$200 |
-| Estimated per sprint | 15-30 min | $10-20/sprint |
-| Full complex app (20 sprints) | ~10 hr | ~$300-400 |
+| Estimated per sprint | 15–30 min | $10–20/sprint |
+| Full complex app (20 sprints) | ~10 hr | ~$300–400 |
 
 Budget guideline: 20 sprints × $15 avg = ~$300/harness run for complex full-stack apps.
 
@@ -371,9 +413,12 @@ Budget guideline: 20 sprints × $15 avg = ~$300/harness run for complex full-sta
 
 ## Tooling
 
-- **Orchestrator**: AO (agent-orchestrator) via `dispatch-task` skill — long-lived workspace per harness run
-- **Evaluator runtime**: Playwright MCP for live app interaction (navigate, click, inspect DOM/state)
-- **Artifact store**: `./harness/{run_id}/` — filesystem; survives all restarts
-- **State tracking**: `harness_state.json` (machine) + `harness_summary.md` (human-readable)
-- **Git**: Generator commits after each sprint; revert to prior sprint on cascade failure
-- **Context monitoring**: Token budget tracked per sprint; Orchestrator aborts if exceeded
+- **Orchestrator:** AO (agent-orchestrator) via `dispatch-task` skill — long-lived workspace per harness run
+- **Evaluator runtime:** `ao skeptic verify` (upgraded per gap analysis)
+- **Inner loop:** SelfCritiqueVerificationLoop (2-iteration cap for skeptic; 3 for full harness)
+- **Scorer:** CanonicalCodeScorer (6-dim rubric + diff similarity)
+- **Artifact store:** `./harness/{run_id}/` — filesystem; survives all restarts
+- **State tracking:** `harness_state.json` (machine) + `harness_summary.md` (human-readable)
+- **Skeptic calibration:** `~/.agent-orchestrator/skeptic-calibration.json`
+- **Git:** Generator commits after each sprint; revert to prior sprint on cascade failure
+- **Context monitoring:** Token budget tracked per sprint; Orchestrator aborts if exceeded

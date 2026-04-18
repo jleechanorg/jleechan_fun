@@ -2,8 +2,12 @@
 
 > A fully autonomous multi-agent coding architecture combining GAN-style generation/evaluation loops, Anthropic-style context resets and sprint contracts, and Boris-style research and planning phases — with no human in the loop. Evaluator thresholds are the only quality gate.
 
-**Status:** Design v2 (wiki-informed)
-**Sources:** Anthropic Harness Engineering (2025), Anthropic Advisor/GAN Strategy (2025), Boris Tan "How I Use Claude Code" (2026), LLM Wiki prior experiments (Meta-Harness, SWE-bench, PRM, Combined), SWE-bench/SWE-TRACE (2025-2026)
+**Status:** Design v2 (fully self-contained)
+**Sources:**
+- [Anthropic: Harness Design for Long-Running Apps](https://www.anthropic.com/engineering/harness-design-long-running-apps) (Prithvi Rajasekaran, 2025)
+- [Anthropic: The Advisor Strategy](https://claude.com/blog/the-advisor-strategy) (April 2026)
+- [Boris Tan: How I Use Claude Code](https://boristane.com/blog/how-i-use-claude-code/) (February 2026)
+- [LLM Wiki experiments](https://github.com/jleechanorg/llm-wiki): Meta-Harness, SWE-bench, PRM, Combined cycles against worldarchitect.ai PRs
 
 ---
 
@@ -22,23 +26,62 @@ The harness addresses all four via architectural decisions, not prompt engineeri
 
 ## The Three Source Patterns
 
-### Anthropic Harness (Context + Architecture)
-- Context resets > compaction alone for eliminating context anxiety
-- Three-agent architecture: planner → generator → evaluator
-- Sprint contracts negotiated before each build chunk
-- File-based handoffs that survive agent restarts
+### Anthropic Harness — Generator/Evaluator Separation
 
-### Anthropic Advisor / GAN Strategy (Quality Gates)
-- Generator + Evaluator must be separate agents
-- Evaluator calibrated to be skeptical via few-shot examples
-- Hard thresholds on grading criteria — any breach = fail
-- **Current design uses `ao skeptic verify` (upgraded) as the active Evaluator.** Playwright MCP is the reference implementation pattern; the upgraded skeptic agent replaces it as the live architecture.
+From [Anthropic's harness design post](https://www.anthropic.com/engineering/harness-design-long-running-apps):
 
-### Boris Workflow (Research + Planning Rigor)
-- Mandatory deep-read research phase before any planning
-- `research.md` as prerequisite artifact (blocks planning if <50 lines)
-- All implementation gated behind approved plan
-- Todo list in plan tracked throughout execution
+> "When asked to evaluate work they've produced, agents tend to respond by confidently praising the work — even when, to a human observer, the quality is obviously mediocre... Separating the agent doing the work from the agent judging it proves to be a strong lever to address this issue."
+
+The architecture uses **three agents**: planner → generator → evaluator. Key insights:
+
+- **Context resets > compaction alone.** Compaction preserves continuity but doesn't give a clean slate — context anxiety persists. A reset provides a clean slate at cost of token overhead. [Anthropic found Sonnet 4.5 exhibited context anxiety strongly enough that compaction alone wasn't sufficient; context resets became essential until Opus 4.5 largely removed that behavior.]
+- **Sprint contracts** negotiated before each build chunk keep scope tight.
+- **File-based handoffs** survive agent restarts — each agent reads state and resumes.
+
+**GAN-style loop:** The evaluator grades outputs and returns critique; the generator refines against that critique. The evaluator must be tuned to be skeptical — an uncalibrated evaluator is still generous to LLM-generated outputs. Few-shot calibration with detailed score breakdowns aligns the evaluator's judgment and reduces score drift.
+
+**Four grading criteria** (from the Anthropic article, applied to frontend but transferable to code):
+
+| Criterion | Weight | What It Penalizes |
+|-----------|--------|-------------------|
+| Design/Architecture quality | High | Incoherent whole; parts that don't combine |
+| Originality | High | Template layouts, library defaults, AI slop patterns (purple gradients over white cards) |
+| Craft | Standard | Broken fundamentals — most reasonable implementations pass by default |
+| Functionality | Standard | Users can't find actions or complete tasks |
+
+> "Including phrases like 'the best designs are museum quality' pushed designs toward a particular visual convergence, suggesting that the prompting associated with the criteria directly shaped the character of the output."
+
+### Anthropic Advisor Strategy — Frontier Reasoning on Demand
+
+From [The Advisor Strategy](https://claude.com/blog/the-advisor-strategy):
+
+> "Sonnet or Haiku runs the task end-to-end as the executor, calling tools, reading results, and iterating toward a solution. When the executor hits a decision it can't reasonably solve, it consults Opus for guidance as the advisor. Opus accesses the shared context and returns a plan, a correction, or a stop signal, and the executor resumes."
+
+This **inverts** the common sub-agent pattern (large orchestrator decomposes and delegates to workers). Here a smaller, cost-effective model drives and escalates only when it needs frontier-level reasoning. Results: **+2.7 percentage points on SWE-bench Multilingual 1** over Sonnet alone, at **11.9% lower cost per task**.
+
+In the harness context: the **Generator is the executor** (Sonnet-class cost), and the **Evaluator is the advisor** (Opus-class reasoning) — but the advisor evaluates the output, not just高层次 decisions. The evaluator provides critique the generator must act on before advancing.
+
+### Boris Workflow — Research + Planning Rigor
+
+From [Boris Tan's workflow](https://boristane.com/blog/how-i-use-claude-code/):
+
+> "Never let Claude write code until you've reviewed and approved a written plan."
+
+The three phases:
+
+1. **Research phase** — Mandatory deep-read before any planning. Key phrase: "deeply," "in great details," "intricacies." Without these words, Claude skims function signatures and moves on. Output: `research.md` (>50 lines). This is the review surface — if research is wrong, plan is wrong, implementation is wrong.
+
+2. **Planning phase** — Plan in a persistent markdown file. Boris uses his own `.md` files, not Claude Code's built-in plan mode. Full control, editable in editor, persists as a real artifact.
+
+3. **Annotation cycle** — The most distinctive step: open the plan in your editor, add inline notes (correcting assumptions, rejecting approaches, adding constraints), send Claude back to address them. Repeat 1–6 times. The explicit "don't implement yet" guard is essential — without it, Claude jumps to code the moment it thinks the plan is good enough.
+
+**Implementation directive** (Boris's exact phrasing, transferable to autonomous agents):
+```
+implement it all. when you're done with a task or phase, mark it as completed
+in the plan document. do not stop until all tasks and phases are completed.
+do not add unnecessary comments or jsdocs. do not use any or unknown types.
+continuously run typecheck to make sure you're not introducing new issues.
+```
 
 ---
 
@@ -48,12 +91,12 @@ The harness addresses all four via architectural decisions, not prompt engineeri
 ORCHESTRATOR (AO, long-lived)
   State machine · artifact routing · loop control · budget
 
-  Researcher → research.md           (blocks if <50 lines)
+  Researcher → research.md              (blocks if <50 lines)
   Strategist → spec.md + plan.md
-  Reviewer   → plan_review.md         (L1 constraint enforcement)
+  Reviewer   → plan_review.md            (L1 constraint enforcement)
   Generator + Reviewer → sprint_contract.md  (max 2 rounds negotiation)
   Generator  → sprint_N_report.md + git commit
-  Evaluator  → sprint_N_eval.md      (dual verdict: EVIDENCE + QUALITY)
+  Evaluator  → sprint_N_eval.md         (dual verdict: EVIDENCE + QUALITY)
     [QUALITY FAIL] → critique → Generator (SelfCritiqueVerificationLoop, 2-iter cap)
     [PASS]          → next sprint
 ```
@@ -103,9 +146,9 @@ EVALUATE: AO skeptic agent → dual verdict (EVIDENCE + QUALITY)
 
 ---
 
-## LLM Wiki — Prior Experiment Results
+## Prior Experiment Results
 
-Three prior experiment cycles were run against worldarchitect.ai PRs. These results directly inform the Evaluator upgrade path.
+Three harness experiment cycles were run against worldarchitect.ai PRs (jleechanorg/llm-wiki). These directly inform the Evaluator upgrade path.
 
 ### Meta-Harness (context + prompt optimization)
 
@@ -146,17 +189,15 @@ Three prior experiment cycles were run against worldarchitect.ai PRs. These resu
 | WA-004 (medium) | 45–68 | **92** | +2 |
 | WA-005 (complex) | 40–62 | **88** | +1 |
 
-**Recommendation:** Combined for sprints marked "critical"; Meta-Harness alone for routine sprints. Most value is captured by Meta-Harness alone; Combined is additive primarily for small/medium tasks.
+**Recommendation:** Combined for sprints marked "critical"; Meta-Harness alone for routine sprints. Most value is captured by Meta-Harness alone.
 
 ---
 
-## Grading Criteria
+## Grading Criteria — CanonicalCodeScorer
 
-Hard threshold gate — any criterion below its threshold = sprint fails. Evaluator never sees Generator's self-eval.
+The Evaluator's scoring engine. Six dimensions, weighted, with diff-similarity against a canonical reference.
 
-### CanonicalCodeScorer — 6-Dimension Rubric
-
-The Evaluator's scoring engine. Rubric from `~/llm_wiki/wiki/concepts/CanonicalCodeScorer.md`.
+### 6-Dimension Rubric
 
 | Dimension | Weight | What It Catches | Threshold |
 |-----------|--------|-----------------|-----------|
@@ -167,11 +208,13 @@ The Evaluator's scoring engine. Rubric from `~/llm_wiki/wiki/concepts/CanonicalC
 | Documentation | 10% | Docstrings explain *why*, not *what* | ≥ 60% |
 | Evidence-Standard Adherence | 10% | Harness evidence standards met | ≥ 70% |
 
-**Overall formula:** `0.7 × rubric-weighted-pass-rate + 0.3 × diff-similarity`
+### Scoring Formula
 
-- **Rubric component:** Each dimension is continuous (0–100%), not binary. Per-dimension score is the estimated pass rate within that dimension. A dimension "passes" when its score ≥ its configured Threshold.
-- **Diff similarity:** Token-level edit distance against a ground-truth canonical pattern. Normalized as `1 - (edit_distance / max(edit_distance, len(pattern)))`. Prevents "polished garbage" — code that scores well qualitatively but diverges structurally from the correct implementation.
-- **Fallback when no canonical exists:** Diff-similarity is marked N/A; overall formula falls back to rubric-only score (weight 1.0). Use nearest-canonical heuristic: find the most similar feature pattern in `wiki/concepts/` and use its canonical as the diff reference.
+**Overall:** `0.7 × rubric-score + 0.3 × diff-similarity`
+
+- **Rubric component:** Each dimension is continuous (0–100%). Weighted average of the six dimension scores. A dimension "passes" when its score ≥ its configured Threshold. The rubric component is the weighted pass rate expressed as a decimal (e.g., 85% → 0.85).
+- **Diff similarity:** Token-level edit distance against a ground-truth canonical pattern. Normalized as `1 - (edit_distance / max(len(candidate), len(pattern)))`. Range 0–1. Prevents "polished garbage" — code that scores well qualitatively but diverges structurally from the correct implementation.
+- **Fallback (no canonical):** Diff-similarity = N/A, rubric weight = 1.0. Optional override: find the most similar feature pattern in `wiki/concepts/` and use its canonical as the diff reference.
 
 ### Dual Verdict (EVIDENCE + QUALITY)
 
@@ -188,13 +231,14 @@ This is the DualAgentArchitecture pattern. Evidence compliance and code quality 
 
 **Few-shot calibration:** Run 3 test evaluations on known-good/known-bad reference outputs before harness launch. Score deviation from expected results indicates drift.
 
-**Drift prevention:** Reset evaluator prompt to prevent self-reinforcement. Track pass rate in `~/.agent-orchestrator/skeptic-calibration.json`. **Semantics: consecutive pass streak** — if the 10 most recent runs are all PASS (no FAIL in the last 10 entries), trigger a prompt reset. Any FAIL in the last 10 resets the streak to 0.
+**Drift prevention:** Reset evaluator prompt to prevent self-reinforcement. **Consecutive pass streak semantics:** If the 10 most recent runs are all PASS (no FAIL in the last 10 entries), trigger a prompt reset. Any FAIL in the last 10 resets the streak to 0.
+
+**Calibration prompt anchor:**
+> "Be skeptical. Generous scores from a generator are meaningless. You are calibrated to reject mediocre output. Penalize purple-gradient-over-white-card patterns, library defaults, and safe generic layouts. The best outputs demonstrate deliberate creative choices. If in doubt, err toward failure — the Generator can iterate."
 
 ---
 
 ## SelfCritiqueVerificationLoop — The Inner Iteration Loop
-
-From `~/llm_wiki/wiki/concepts/SelfCritiqueVerificationLoop.md`:
 
 ```
 Phase 0: Insert canonical pattern prompt (e.g. "FastAPI error handling pattern")
@@ -216,8 +260,6 @@ Phase 3: Critique against test results
 
 ## Harness5LayerModel — Architectural Context
 
-From `~/llm_wiki/wiki/concepts/Harness5LayerModel.md`:
-
 | Layer | Description | Autonomous Harness Role |
 |-------|-------------|------------------------|
 | L1 Constraint | ArchUnit-style linters, dependency rules, naming conventions | Reviewer agent — flags violations during plan_review.md phase, before any code is written |
@@ -228,7 +270,7 @@ From `~/llm_wiki/wiki/concepts/Harness5LayerModel.md`:
 
 **Key insight:** Anthropic Managed Agents provides L2, L3, L5. **Gap:** L1 (domain-specific architectural constraints) and L4 (acceptance criteria/verification) are the team's responsibility. Most teams skip L1, over-invest in L4. **L1 offers highest marginal return on managed platforms.**
 
-**AO skeptic agent currently serves L4.** It should also serve L1 constraint enforcement by reading architectural rules from the wiki and flagging violations during plan_review.md — before any code is written.
+The AO skeptic agent currently serves L4. It should also serve L1 constraint enforcement by reading architectural rules and flagging violations during plan_review.md — before any code is written.
 
 ---
 
@@ -322,66 +364,21 @@ Implementation should be mechanical, not creative. All creative decisions were m
 
 ---
 
-## Orchestrator Responsibilities
-
-1. **State machine:** Track current phase, sprint number, eval pass/fail per sprint
-2. **Artifact routing:** Each agent reads correct inputs, writes to correct outputs
-3. **Guard enforcement:** Generator cannot start until `sprint_contract.md` is signed
-4. **Context budget:** Reset at 80% context; abort at token budget with reason logged
-5. **Loop control:** Continue sprint loop until `plan.md` complete OR max iterations reached (default: 20 sprints)
-6. **Evaluator calibration:** Run 3-shot baseline check before harness launch
-7. **Persistence:** All files in `./harness/{run_id}/`; survives Orchestrator restarts
-8. **Skeptic calibration tracking:** Maintain `skeptic-calibration.json`
-
----
-
-## Failure Modes and Mitigations
-
-| Failure | Cause | Fix |
-|---------|-------|-----|
-| Polished garbage | Evaluator too lenient | Recalibrate few-shot; reset evaluator prompt |
-| Infinite loop | Threshold too high | Adjust down; cap 5 iterations/sprint |
-| Generator drift | No sprint contract | Orchestrator refuses to start sprint without signed contract |
-| Context anxiety | Compaction only | Force reset + state artifact |
-| Evaluator score drift | No prompt reset | Reset every 10 sprints (consecutive-streak semantics) |
-| Beautiful but broken app | No functionality gate | CanonicalCodeScorer hard thresholds all dimensions |
-| Research phase skipped | Orchestrator didn't block | `research.md` <50 lines blocks Strategist |
-| Self-refine fails | No canonical patterns | Mandatory pattern grounding before generation |
-| Skeptic score drift | No calibration tracking | `skeptic-calibration.json` + consecutive-streak reset trigger |
-| Claim without code | No traceability | Claim-to-code mapping phase (P7) — acceptance criteria → diff hunks |
-
----
-
-## Anti-Patterns
-
-- **Ralph loops without evaluator gates** — continuous iteration without thresholds produces mediocre results
-- **Generator self-grading** — agents are reliably generous to their own output
-- **Compaction-only, no resets** — context anxiety persists; model wraps up early
-- **No sprint contract** — vague scope → generator drift → wrong thing built confidently
-- **Human-in-the-loop for every sprint** — bottlenecks the harness; use evaluator thresholds instead
-- **Skipping research phase** — wrong understanding → wrong plan → wrong implementation
-- **Single-evaluator long-term without recalibration** — score drift is inevitable
-- **Generator jumping ahead without contract** — "don't implement yet" guard
-- **Self-refine without canonical pattern grounding** — hits token cap and still fails
-- **Conflating evidence and quality verdicts** — code quality failures masked by good evidence
-
----
-
-## Evaluator Upgrade Path (Skeptic Agent)
+## Evaluator Upgrade Path (Skeptic Agent P1–P7)
 
 The current `ao skeptic verify` is structurally the Evaluator but is underpowered. Wiki experiments prove these gaps matter:
 
 | Priority | Gap | Wiki Finding | Improvement |
 |----------|-----|--------------|-------------|
-| **P1** | No step-level scoring (PRM) | Steps <7/10 trigger revision; catches guard-clause and `.get()` chain misses | Decompose PR into steps; score each step |
+| **P1** | No CanonicalCodeScorer rubric | 6-dim rubric + diff similarity: baseline 55 → optimized 87 | Score all dimensions independently; PASS requires ALL above threshold |
 | **P2** | No SelfCritiqueVerificationLoop | Self-refine without canonical hits token cap and still fails | 2-pass skeptic: first identifies failures, second verifies fixes |
-| **P3** | No CanonicalCodeScorer rubric | 6-dim rubric + diff similarity: baseline 55 → optimized 87 | Score all dimensions independently; PASS requires ALL above threshold |
-| **P4** | No drift prevention | Evaluator becomes self-reinforcing | `skeptic-calibration.json` + consecutive-streak reset trigger |
-| **P5** | No few-shot calibration | 3 reference PRs calibrate evaluator | Run 3 reference PRs through skeptic before activating on real PRs |
-| **P6** | No dual verdict | Evidence and quality conflated | Emit EVIDENCE + QUALITY separately; merge gate requires both PASS |
+| **P3** | No step-level scoring (PRM) | Steps <7/10 trigger revision; catches guard-clause and `.get()` chain misses | Decompose PR into steps; score each step |
+| **P4** | No dual verdict | Evidence and quality conflated | Emit EVIDENCE + QUALITY separately; merge gate requires both PASS |
+| **P5** | No drift prevention | Evaluator becomes self-reinforcing | `skeptic-calibration.json` + consecutive-streak reset trigger |
+| **P6** | No few-shot calibration | 3 reference PRs calibrate evaluator | Run 3 reference PRs through skeptic before activating on real PRs |
 | **P7** | No claim-to-code traceability | Acceptance criteria not mapped to diff hunks | Explicit claim-mapping phase: PR description → diff hunk verification |
 
-**Expected impact:** Full P1–P6 implementation closes ~80% of the evaluator gap. P7 (claim-to-code traceability) closes the remaining ~20% — PR description claims explicitly verified against diff hunks.
+**Expected impact:** Full P1–P6 implementation closes ~80% of the evaluator gap. P7 (claim-to-code traceability) closes the remaining ~20%.
 
 ---
 
@@ -408,6 +405,21 @@ Budget guideline: 20 sprints × $15 avg = ~$300/harness run for complex full-sta
 | Bug repair | Generator (targeted) + Evaluator (regression test) only |
 | API / backend service | Evaluator emphasizes API correctness + data integrity |
 | Very long task (>4h) | Context reset every 2 sprints; Evaluator recalibration every 10 sprints |
+
+---
+
+## Anti-Patterns
+
+- **Ralph loops without evaluator gates** — continuous iteration without thresholds produces mediocre results
+- **Generator self-grading** — agents are reliably generous to their own output
+- **Compaction-only, no resets** — context anxiety persists; model wraps up early
+- **No sprint contract** — vague scope → generator drift → wrong thing built confidently
+- **Human-in-the-loop for every sprint** — bottlenecks the harness; use evaluator thresholds instead
+- **Skipping research phase** — wrong understanding → wrong plan → wrong implementation
+- **Single-evaluator long-term without recalibration** — score drift is inevitable
+- **Generator jumping ahead without contract** — "don't implement yet" guard
+- **Self-refine without canonical pattern grounding** — hits token cap and still fails
+- **Conflating evidence and quality verdicts** — code quality failures masked by good evidence
 
 ---
 
